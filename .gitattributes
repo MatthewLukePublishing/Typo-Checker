@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+# The checker verifies this exporter byte for byte. Git must never rewrite it.
+*.jsx -text
