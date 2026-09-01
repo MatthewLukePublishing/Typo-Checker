@@ -1,0 +1,25 @@
+node_modules/
+
+# Review inputs, outputs, and job evidence
+*.xlsx
+*.xlsm
+*.xls
+*.job.json
+typo_checks/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Temporary and editor files
+*.log
+*.tmp
+*.temp
+~$*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
