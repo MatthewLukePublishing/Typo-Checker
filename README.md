@@ -1,8 +1,11 @@
 # Typo Checker
 
-Typo Checker reviews text in Excel workbooks with the official Codex CLI and a
-ChatGPT subscription. It is designed to fail closed: it never uses an OpenAI API
-key, never falls back to the paid API, and never silently selects an older model.
+Typo Checker exports text from the one saved document open in Adobe InDesign,
+reviews it through the official Codex CLI and a ChatGPT subscription, and writes
+an Excel corrections report. Its public launcher downloads a fresh copy of the
+latest stable GitHub release for every run. It is designed to fail closed: it
+never uses an OpenAI API key, never falls back to the paid API, and never silently
+selects an older model or stale program release.
 
 The primary workflow checks every text item twice. For every query it:
 
@@ -19,30 +22,64 @@ The primary workflow checks every text item twice. For every query it:
 
 - Windows 10 or Windows 11
 - Node.js 20 or newer
+- Adobe InDesign 2026 for the open-document workflow
 - The official [Codex CLI](https://learn.chatgpt.com/docs/codex/cli), signed in with
   **Sign in with ChatGPT**
 - A ChatGPT plan with access to Codex
-- Microsoft Excel or another application that can create and open `.xlsx` files
+- Microsoft Excel or another application that can open `.xlsx` files
 - Internet access while a review is running
 
-Adobe InDesign is needed only for the advanced InDesign export workflow. The
-standalone workbook workflow does not require InDesign.
+The standalone workbook tools do not require InDesign.
 
-## Download and install
+## Open InDesign and run the latest release
 
-1. Download the latest release ZIP from this repository's **Releases** page and
-   extract it.
-2. Open PowerShell in the extracted folder.
-3. Install the workbook dependency:
+1. Open exactly one `.indd` document in InDesign 2026.
+2. Save it and leave it open with no unsaved changes.
+3. Ask Codex/ChatGPT to follow the copy-paste instructions in
+   [`CHATGPT_PROMPT.md`](CHATGPT_PROMPT.md), specifying the language to check.
 
-   ```powershell
-   npm install
-   ```
+If `Run_Latest_Typo_Checker.ps1` is already available locally, the direct command
+is:
 
-4. Run `codex` once and choose **Sign in with ChatGPT** if the CLI is not already
-   authenticated.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Run_Latest_Typo_Checker.ps1 -Language German
+```
+
+The launcher does not trust or execute a previously downloaded checker. On every
+run it:
+
+- queries the canonical repository's latest stable release;
+- resolves the release tag to an immutable 40-character commit SHA;
+- downloads that exact commit into a new temporary folder;
+- verifies the archive structure, package version, bundled exporter, and offline
+  self-tests;
+- rechecks the latest release immediately before starting the checker; and
+- records the release tag, commit SHA, and downloaded archive SHA-256 in the job.
+
+If the latest release cannot be resolved or changes during preparation, the run
+stops. Only the temporary program download is removed afterward. The generated
+job and report files remain under this folder beside the open document:
+
+```text
+typo_checks\<run-id>\
+  input\content_export.xlsx
+  reports\content_export_corrections.xlsx
+  reports\content_export_corrections.xlsx.job.json
+```
+
+No Excel input file is stored in or downloaded from GitHub. The bundled, hash-
+verified InDesign exporter creates `content_export.xlsx` locally from the open
+document during each run. The controller does not save, close, or modify a
+document that was already open.
 
 No `.env` file, API key, or OpenAI API billing account is used by this program.
+Run `codex` once and choose **Sign in with ChatGPT** if the CLI is not already
+authenticated.
+
+## Download for standalone workbook use
+
+Download and extract the latest release ZIP. The executable checker files are
+bundled; `npm install` is needed only when developing or rebuilding the project.
 
 ## Quick start: check one Excel column
 
@@ -93,12 +130,13 @@ Each script is configured with environment variables declared near the beginning
 of the file. It rejects unexpected extra columns instead of silently discarding
 them.
 
-## InDesign workflow
+## Translation-job InDesign workflow
 
-`Typo_Checker.js` also contains the complete bounded Windows/InDesign workflow.
-It opens only the production INDD recorded in an active-job JSON file, creates an
-isolated export, checks every exported paragraph, performs the mandatory recheck,
-and writes a new report workbook and JSON job record.
+In addition to the public one-open-document launcher, `Typo_Checker.js` retains
+the internal production workflow. It opens only the production INDD recorded in
+an active-job JSON file, creates an isolated export, checks every exported
+paragraph, performs the mandatory recheck, and writes a new report workbook and
+JSON job record.
 
 The distribution includes `Export All Content to Excel.jsx`, the exact exporter
 whose SHA-256 is verified before each run. To use a non-default active-job file:
@@ -109,8 +147,8 @@ node .\Typo_Checker.js
 Remove-Item Env:ACTIVE_JOB_CONFIG_PATH
 ```
 
-In unattended mode, InDesign must have no open documents. For a deliberate test
-against the one configured document already open in InDesign:
+In unattended translation-job mode, InDesign must have no open documents. For a
+deliberate test against the one configured document already open in InDesign:
 
 ```powershell
 $env:ACTIVE_JOB_CONFIG_PATH = "C:\path\to\Active Job.json"
@@ -119,8 +157,10 @@ node .\Typo_Checker.js
 Remove-Item Env:ACTIVE_JOB_CONFIG_PATH, Env:USE_OPEN_INDESIGN_DOCUMENT
 ```
 
-The controller leaves a deliberately pre-opened document open and does not save
-it. Existing translation manifests, source exports, and workbooks are never
+The generic public launcher uses `OPEN_INDESIGN_DOCUMENT=true`; it discovers the
+single open document without requiring the private production `Active Job.json`.
+All InDesign discovery and export operations share one global mutex and run
+serially. Existing translation manifests, source exports, and workbooks are never
 overwritten.
 
 If export succeeded but a later review stage failed, `REUSE_EXPORT_JOB_PATH` can
@@ -134,9 +174,10 @@ Run all self-tests without opening InDesign or contacting Codex:
 npm test
 ```
 
-The self-tests validate the bundled checker, the adjacent exporter, the
-subscription boundary, input contracts, provenance checks, and Excel read/write
-support.
+The self-tests validate the bundled checker, adjacent exporter, public launcher,
+subscription boundary, input contracts, release provenance, embedded PowerShell,
+safe cleanup boundary, and Excel read/write support. They do not contact GitHub,
+Codex, or InDesign.
 
 ## Repository permissions
 
@@ -150,7 +191,8 @@ owner reviews and merges it.
 
 ### Management contract
 
-- Primary entry point: `Typo_Checker.js`
+- Primary entry point: `Run_Latest_Typo_Checker.ps1`
+- Bundled checker: `Typo_Checker.js`
 - Archive boundary: `None`
 
 The maintained source folder is

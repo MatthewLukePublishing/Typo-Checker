@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +26,42 @@ for (const [scriptName, environmentName] of tests) {
   if (run.stderr) process.stderr.write(run.stderr);
   if (run.error || run.status !== 0) {
     console.error(`${scriptName} failed with exit code ${run.status}: ${run.error?.message || "see diagnostics above"}`);
+    process.exit(run.status || 1);
+  }
+}
+
+if (process.platform === "win32") {
+  process.stdout.write("\n== Run_Latest_Typo_Checker.ps1 ==\n");
+  const powershellPath = path.join(
+    process.env.SystemRoot || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  if (!fs.existsSync(powershellPath)) {
+    console.error(`Windows PowerShell was not found: ${powershellPath}`);
+    process.exit(1);
+  }
+  const run = spawnSync(powershellPath, [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    path.join(scriptDirectory, "Run_Latest_Typo_Checker.ps1"),
+    "-SelfTest",
+  ], {
+    cwd: scriptDirectory,
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
+  });
+  if (run.stdout) process.stdout.write(run.stdout);
+  if (run.stderr) process.stderr.write(run.stderr);
+  if (run.error || run.status !== 0) {
+    console.error(`Run_Latest_Typo_Checker.ps1 failed with exit code ${run.status}: ${run.error?.message || "see diagnostics above"}`);
     process.exit(run.status || 1);
   }
 }

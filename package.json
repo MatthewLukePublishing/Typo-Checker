@@ -1,6 +1,6 @@
 {
   "name": "@matthew-luke-publishing/typo-checker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Subscription-only typo and translation consistency checking with the official Codex CLI.",
   "private": true,
   "type": "module",

@@ -100854,6 +100854,8 @@ var EXPLICIT_INPUT_XLSX = String(process.env.INPUT_XLSX || "").trim();
 var REUSE_EXPORT_JOB_PATH = String(process.env.REUSE_EXPORT_JOB_PATH || "").trim();
 var ALLOW_STANDALONE_INPUT = /^(1|true|yes)$/i.test(process.env.ALLOW_STANDALONE_INPUT || "false");
 var USE_OPEN_INDESIGN_DOCUMENT = /^(1|true|yes)$/i.test(process.env.USE_OPEN_INDESIGN_DOCUMENT || "false");
+var OPEN_INDESIGN_DOCUMENT = /^(1|true|yes)$/i.test(process.env.OPEN_INDESIGN_DOCUMENT || "false");
+if (OPEN_INDESIGN_DOCUMENT) USE_OPEN_INDESIGN_DOCUMENT = true;
 var INPUT_XLSX = "";
 var OUTPUT_JSON = "";
 var OUTPUT_XLSX = "";
@@ -101100,6 +101102,62 @@ try {
 }
 \r
 `;
+var INDESIGN_OPEN_DOCUMENT_DISCOVERY_ID = "embedded://Typo_Checker/Find-OpenInDesignDocument.ps1";
+var INDESIGN_OPEN_DOCUMENT_DISCOVERY_SOURCE = `[CmdletBinding()]
+param()
+
+$ErrorActionPreference = 'Stop'
+$javaScriptLanguage = 1246973031
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+trap {
+    $message = [string]$_.Exception.Message
+    $message = $message.Replace([Environment]::NewLine, ' ').Replace("\r", ' ').Replace("\n", ' ')
+    [Console]::Error.WriteLine("TYPO_OPEN_DOCUMENT_DISCOVERY_ERROR|$message")
+    exit 1
+}
+
+function Get-InDesignApplication {
+    foreach ($programId in @('InDesign.Application.2026', 'InDesign.Application.CC.2026', 'InDesign.Application')) {
+        try {
+            $candidate = New-Object -ComObject $programId
+            if ($null -ne $candidate) { return $candidate }
+        } catch {}
+    }
+    throw 'Unable to connect to Adobe InDesign 2026.'
+}
+
+if (@(Get-Process -Name InDesign -ErrorAction SilentlyContinue).Count -eq 0) {
+    throw 'Adobe InDesign must already be running with exactly one saved, unmodified document open.'
+}
+
+$mutex = [Threading.Mutex]::new($false, 'Global\\PublishingStep2InDesignTranslation')
+$hasMutex = $false
+try {
+    $hasMutex = $mutex.WaitOne(0)
+    if (-not $hasMutex) { throw 'Another InDesign translation or typo-export operation is already running.' }
+    $app = Get-InDesignApplication
+    $result = [string]$app.DoScript(@'
+(function(){
+  if(app.documents.length!==1) return "ERROR|Expected exactly one open InDesign document; found "+app.documents.length+".";
+  var document=app.documents[0];
+  if(!document.saved) return "ERROR|The open InDesign document has never been saved.";
+  if(document.modified) return "ERROR|The open InDesign document has unsaved changes. Save it before running.";
+  var documentPath="";
+  try{documentPath=document.fullName.fsName;}catch(error){return "ERROR|Could not resolve the open InDesign document path: "+error;}
+  if(!documentPath) return "ERROR|The open InDesign document path is blank.";
+  return "TYPO_OPEN_DOCUMENT|"+documentPath;
+}());
+'@, $javaScriptLanguage)
+    if ($result -notlike 'TYPO_OPEN_DOCUMENT|*') {
+        throw "InDesign document discovery returned an unexpected result: $result"
+    }
+    Write-Output $result
+} finally {
+    if ($hasMutex) { $mutex.ReleaseMutex() }
+    $mutex.Dispose()
+}
+\r
+`;
 var OFFICIAL_LATEST_MODEL_URL = "https://developers.openai.com/api/docs/guides/latest-model.md";
 var OFFICIAL_BASE_URL = "https://developers.openai.com";
 var OFFICIAL_MODEL_HOST = new URL(OFFICIAL_BASE_URL).hostname;
@@ -101164,6 +101222,27 @@ function assertOutsideArchive(filePath, label) {
   if (/[\\/](?:_?archive)(?:[\\/]|$)/i.test(path.resolve(filePath))) {
     throw new Error(`Refusing ${label} inside an Archive directory: ${filePath}`);
   }
+}
+function distributionEvidence(source = process.env) {
+  const releaseTag = String(source.TYPO_CHECKER_RELEASE_TAG || "").trim();
+  const commitSha = String(source.TYPO_CHECKER_COMMIT_SHA || "").trim();
+  const archiveSha256 = String(source.TYPO_CHECKER_ARCHIVE_SHA256 || "").trim();
+  if (!releaseTag && !commitSha && !archiveSha256) return null;
+  if (!/^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(releaseTag)) {
+    throw new Error("TYPO_CHECKER_RELEASE_TAG must identify a versioned release such as v1.1.0.");
+  }
+  if (!/^[0-9a-f]{40}$/i.test(commitSha)) {
+    throw new Error("TYPO_CHECKER_COMMIT_SHA must be the exact 40-character release commit SHA.");
+  }
+  if (!/^[0-9a-f]{64}$/i.test(archiveSha256)) {
+    throw new Error("TYPO_CHECKER_ARCHIVE_SHA256 must be the exact SHA-256 of the downloaded release archive.");
+  }
+  return {
+    repository: "MatthewLukePublishing/typo-checker",
+    releaseTag,
+    commitSha: commitSha.toLowerCase(),
+    archiveSha256: archiveSha256.toUpperCase()
+  };
 }
 function parseLatestModelInfo(markdown) {
   const lines = markdown.split(/\r?\n/);
@@ -101267,6 +101346,25 @@ function newRunId() {
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
   return `typo_export_${timestamp}_${crypto4.randomBytes(4).toString("hex")}`;
 }
+function prepareRuntimeExporter(exporter, runId, runActiveJobPath) {
+  const approvedSource = fs.readFileSync(exporter.path, "utf8");
+  const approvedPointer = '  var ACTIVE_JOB_CONFIG_PATH = "D:\\\\Google Drive\\\\Publishing\\\\Code\\\\Programs\\\\Translate\\\\02 Translate Text\\\\Active Job.json";';
+  if (approvedSource.split(approvedPointer).length !== 2) {
+    throw new Error("The approved exporter does not contain exactly one expected active-job pointer declaration.");
+  }
+  let runtimeSource = approvedSource.replace(
+    approvedPointer,
+    `  var ACTIVE_JOB_CONFIG_PATH = ${JSON.stringify(runActiveJobPath)};`
+  );
+  const reservedExportKey = "        export: {";
+  if (runtimeSource.split(reservedExportKey).length !== 2) {
+    throw new Error("The approved exporter does not contain exactly one expected manifest export key.");
+  }
+  runtimeSource = runtimeSource.replace(reservedExportKey, '        "export": {');
+  const runtimeExporterPath = path.join(os.tmpdir(), `${runId}.jsx`);
+  fs.writeFileSync(runtimeExporterPath, runtimeSource, "utf8");
+  return { path: runtimeExporterPath, sha256: sha256File(runtimeExporterPath) };
+}
 function createIsolatedExportJob() {
   const exporter = verifyInDesignExporter();
   const activeJob = readJson(ACTIVE_JOB_CONFIG_PATH, "active translation job pointer");
@@ -101331,11 +101429,13 @@ function createIsolatedExportJob() {
       reports: reportsDir
     },
     typoExportRun: {
+      mode: "translation_job",
       sourceTranslationJobId: sourceJobId,
       sourceTranslationJobPath: sourceJobPath,
       sourceTranslationJobConfigSha256: sha256File(sourceJobConfigPath),
       approvedExporterPath: exporter.path,
       approvedExporterSha256: exporter.sha256,
+      distribution: distributionEvidence(),
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     }
   };
@@ -101347,23 +101447,9 @@ function createIsolatedExportJob() {
     sourceTranslationJobId: sourceJobId,
     sourceTranslationJobPath: sourceJobPath
   });
-  const approvedSource = fs.readFileSync(exporter.path, "utf8");
-  const approvedPointer = '  var ACTIVE_JOB_CONFIG_PATH = "D:\\\\Google Drive\\\\Publishing\\\\Code\\\\Programs\\\\Translate\\\\02 Translate Text\\\\Active Job.json";';
-  if (approvedSource.split(approvedPointer).length !== 2) {
-    throw new Error("The approved exporter does not contain exactly one expected active-job pointer declaration.");
-  }
-  let runtimeSource = approvedSource.replace(
-    approvedPointer,
-    `  var ACTIVE_JOB_CONFIG_PATH = ${JSON.stringify(runActiveJobPath)};`
-  );
-  const reservedExportKey = "        export: {";
-  if (runtimeSource.split(reservedExportKey).length !== 2) {
-    throw new Error("The approved exporter does not contain exactly one expected manifest export key.");
-  }
-  runtimeSource = runtimeSource.replace(reservedExportKey, '        "export": {');
-  const runtimeExporterPath = path.join(os.tmpdir(), `${runId}.jsx`);
-  fs.writeFileSync(runtimeExporterPath, runtimeSource, "utf8");
+  const runtimeExporter = prepareRuntimeExporter(exporter, runId, runActiveJobPath);
   return {
+    mode: "translation_job",
     activeJobPath: ACTIVE_JOB_CONFIG_PATH,
     sourceJobPath,
     sourceJobId,
@@ -101377,8 +101463,88 @@ function createIsolatedExportJob() {
     workbookPath,
     reportsDir,
     runActiveJobPath,
-    runtimeExporterPath,
-    runtimeExporterSha256: sha256File(runtimeExporterPath),
+    runtimeExporterPath: runtimeExporter.path,
+    runtimeExporterSha256: runtimeExporter.sha256,
+    exporter
+  };
+}
+function createOpenDocumentExportJob(documentFilePath) {
+  const exporter = verifyInDesignExporter();
+  const documentPath = path.resolve(String(documentFilePath || ""));
+  if (!documentFilePath || !fs.existsSync(documentPath) || !fs.statSync(documentPath).isFile() || path.extname(documentPath).toLowerCase() !== ".indd") {
+    throw new Error(`Open InDesign document is missing or invalid: ${documentFilePath || "(blank)"}`);
+  }
+  assertOutsideArchive(documentPath, "open InDesign document");
+  const documentDirectory = path.dirname(documentPath);
+  const runId = newRunId();
+  const pathDigest = crypto4.createHash("sha256").update(normalizedPath(documentPath)).digest("hex").slice(0, 16);
+  const sourceJobId = `open_document_${pathDigest}`;
+  const jobId = `${sourceJobId}_${runId}`;
+  const jobPath = path.join(documentDirectory, "typo_checks", runId);
+  const manifestPath = path.join(jobPath, "job_manifest.json");
+  const workbookPath = path.join(jobPath, "input", INDESIGN_EXPORT_FILENAME);
+  const reportsDir = path.join(jobPath, "reports");
+  const stateDir = path.join(jobPath, "state");
+  const jobConfigPath = path.join(jobPath, "job_config.json");
+  const runActiveJobPath = path.join(stateDir, "Active Job.json");
+  assertOutsideArchive(jobPath, "open-document typo export job");
+  for (const directory of [path.dirname(workbookPath), reportsDir, stateDir]) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+  const distribution = distributionEvidence();
+  const runConfig = {
+    schemaVersion: 1,
+    jobId,
+    jobPath,
+    book: path.basename(documentPath, path.extname(documentPath)),
+    targetLanguage: CHECK_LANGUAGE,
+    glossaryProfile: "",
+    glossaryTermKey: "",
+    productionWorkspace: {
+      root: documentDirectory,
+      documentPath,
+      textFolder: documentDirectory
+    },
+    paths: {
+      inputWorkbook: workbookPath,
+      reports: reportsDir
+    },
+    typoExportRun: {
+      mode: "open_document",
+      sourceTranslationJobId: sourceJobId,
+      sourceTranslationJobPath: documentDirectory,
+      approvedExporterPath: exporter.path,
+      approvedExporterSha256: exporter.sha256,
+      distribution,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    }
+  };
+  writeJson(jobConfigPath, runConfig);
+  writeJson(runActiveJobPath, {
+    schemaVersion: 1,
+    jobId,
+    jobPath,
+    sourceTranslationJobId: sourceJobId,
+    sourceTranslationJobPath: documentDirectory
+  });
+  const runtimeExporter = prepareRuntimeExporter(exporter, runId, runActiveJobPath);
+  return {
+    mode: "open_document",
+    activeJobPath: runActiveJobPath,
+    sourceJobPath: documentDirectory,
+    sourceJobId,
+    sourceJobConfigPath: "",
+    jobPath,
+    jobId,
+    jobConfigPath,
+    documentPath,
+    textFolderPath: documentDirectory,
+    manifestPath,
+    workbookPath,
+    reportsDir,
+    runActiveJobPath,
+    runtimeExporterPath: runtimeExporter.path,
+    runtimeExporterSha256: runtimeExporter.sha256,
     exporter
   };
 }
@@ -101405,9 +101571,67 @@ function removeEmbeddedInDesignController(controllerPath) {
   }
   fs.unlinkSync(resolvedTarget);
 }
+function writeEmbeddedOpenDocumentDiscovery(runId) {
+  const discoveryPath = path.join(os.tmpdir(), `${runId}_discovery.ps1`);
+  fs.writeFileSync(discoveryPath, `\uFEFF${INDESIGN_OPEN_DOCUMENT_DISCOVERY_SOURCE}`, "utf8");
+  return discoveryPath;
+}
+function removeEmbeddedOpenDocumentDiscovery(discoveryPath) {
+  if (!discoveryPath || !fs.existsSync(discoveryPath)) return;
+  const resolvedTemp = path.resolve(os.tmpdir()) + path.sep;
+  const resolvedTarget = path.resolve(discoveryPath);
+  if (!resolvedTarget.startsWith(resolvedTemp) || !/^typo_export_.+_discovery\.ps1$/i.test(path.basename(resolvedTarget))) {
+    throw new Error(`Refusing to remove unexpected embedded discovery path: ${resolvedTarget}`);
+  }
+  fs.unlinkSync(resolvedTarget);
+}
+function discoverSingleOpenInDesignDocument() {
+  if (process.platform !== "win32") throw new Error("Open-document InDesign discovery requires Windows.");
+  const powershellPath = path.join(
+    process.env.SystemRoot || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe"
+  );
+  if (!fs.existsSync(powershellPath)) throw new Error(`Windows PowerShell was not found: ${powershellPath}`);
+  const discoveryPath = writeEmbeddedOpenDocumentDiscovery(newRunId());
+  try {
+    const run = spawnSync(powershellPath, [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      discoveryPath
+    ], {
+      env: codexEnvironment(),
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 6e4,
+      windowsHide: true
+    });
+    if (run.error) throw new Error(`Could not discover the open InDesign document: ${run.error.message}`);
+    if (run.status !== 0) {
+      const diagnostics = `${run.stdout || ""}\n${run.stderr || ""}`.trim().slice(-4e3);
+      throw new Error(`Open InDesign document discovery failed with exit code ${run.status}.\n${diagnostics}`);
+    }
+    const matches = String(run.stdout || "").split(/\r?\n/).map((line) => line.replace(/^\uFEFF/, "")).filter((line) => line.startsWith("TYPO_OPEN_DOCUMENT|"));
+    if (matches.length !== 1) throw new Error("Open InDesign document discovery did not return exactly one document path.");
+    const documentPath = path.resolve(matches[0].slice("TYPO_OPEN_DOCUMENT|".length));
+    if (!fs.existsSync(documentPath) || !fs.statSync(documentPath).isFile() || path.extname(documentPath).toLowerCase() !== ".indd") {
+      throw new Error(`InDesign reported a missing or invalid document: ${documentPath}`);
+    }
+    assertOutsideArchive(documentPath, "open InDesign document");
+    return documentPath;
+  } finally {
+    removeEmbeddedOpenDocumentDiscovery(discoveryPath);
+  }
+}
 function runInDesignExport() {
   if (process.platform !== "win32") throw new Error("Automatic InDesign export requires Windows.");
-  const exportJob = createIsolatedExportJob();
+  const exportJob = OPEN_INDESIGN_DOCUMENT ? createOpenDocumentExportJob(discoverSingleOpenInDesignDocument()) : createIsolatedExportJob();
   let controllerPath = "";
   const powershellPath = path.join(
     process.env.SystemRoot || "C:\\Windows",
@@ -101443,6 +101667,7 @@ function runInDesignExport() {
       env: codexEnvironment(),
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
+      timeout: 6e5,
       windowsHide: true
     });
     if (run.error) throw new Error(`Could not start the InDesign export controller: ${run.error.message}`);
@@ -101495,12 +101720,17 @@ function reuseExistingExport() {
     throw new Error(`Existing isolated export reports directory is missing: ${reportsDir}`);
   }
   const provenance = jobConfig.typoExportRun || {};
+  const mode = String(provenance.mode || "translation_job");
+  if (!/^(?:translation_job|open_document)$/.test(mode)) {
+    throw new Error(`Existing isolated export has an unsupported mode: ${mode}`);
+  }
   if (String(provenance.approvedExporterPath || "") !== exporter.path || String(provenance.approvedExporterSha256 || "").toUpperCase() !== exporter.sha256) {
     throw new Error("Existing isolated export was not derived from the currently approved InDesign exporter.");
   }
   logWithTime(`Reusing verified InDesign export after an interrupted proofreading run: ${workbookPath}`);
   return {
-    activeJobPath: ACTIVE_JOB_CONFIG_PATH,
+    mode,
+    activeJobPath: mode === "open_document" ? path.join(jobPath, "state", "Active Job.json") : ACTIVE_JOB_CONFIG_PATH,
     sourceJobPath: String(provenance.sourceTranslationJobPath || ""),
     sourceJobId: String(provenance.sourceTranslationJobId || ""),
     sourceJobConfigPath: "",
@@ -101542,8 +101772,13 @@ function resolveInputContext(freshExport = null) {
   }
   if (!freshExport) throw new Error("The InDesign content workbook must be created by this typo-checker run.");
   const exporter = verifyInDesignExporter();
-  const activeJob = readJson(ACTIVE_JOB_CONFIG_PATH, "active translation job pointer");
-  if (String(activeJob.jobId || "") !== freshExport.sourceJobId || normalizedPath(activeJob.jobPath) !== normalizedPath(freshExport.sourceJobPath)) {
+  const activeJobPath = freshExport.mode === "open_document" ? freshExport.runActiveJobPath : ACTIVE_JOB_CONFIG_PATH;
+  const activeJob = readJson(activeJobPath, freshExport.mode === "open_document" ? "isolated open-document job pointer" : "active translation job pointer");
+  if (freshExport.mode === "open_document") {
+    if (String(activeJob.jobId || "") !== freshExport.jobId || normalizedPath(activeJob.jobPath) !== normalizedPath(freshExport.jobPath)) {
+      throw new Error("The isolated open-document job pointer changed while the InDesign export was running.");
+    }
+  } else if (String(activeJob.jobId || "") !== freshExport.sourceJobId || normalizedPath(activeJob.jobPath) !== normalizedPath(freshExport.sourceJobPath)) {
     throw new Error("The active translation job changed while the isolated InDesign export was running.");
   }
   const jobPath = path.resolve(freshExport.jobPath);
@@ -101597,7 +101832,7 @@ function resolveInputContext(freshExport = null) {
     sourceColumnIndex: 1,
     hasHeader: true,
     expectedHeaders: INDESIGN_EXPORT_HEADERS,
-    activeJobPath: ACTIVE_JOB_CONFIG_PATH,
+    activeJobPath,
     sourceTranslationJobPath: freshExport.sourceJobPath,
     sourceTranslationJobId: freshExport.sourceJobId,
     jobPath,
@@ -101846,24 +102081,53 @@ async function runSelfTest() {
   if (!fs.existsSync(powershellPath)) throw new Error(`Windows PowerShell was not found: ${powershellPath}`);
   const selfTestId = `typo_export_selftest_${process.pid}`;
   const controllerPath = writeEmbeddedInDesignController(selfTestId);
+  const discoveryPath = writeEmbeddedOpenDocumentDiscovery(selfTestId);
   const workbookPath = path.join(os.tmpdir(), `typo-checker-selftest-${process.pid}.xlsx`);
+  const openDocumentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typo-checker-open-selftest-"));
+  let openDocumentJob = null;
   try {
-    const escapedControllerPath = controllerPath.replace(/'/g, "''");
-    const parseCommand = [
-      "$tokens=$null",
-      "$errors=$null",
-      `[void][System.Management.Automation.Language.Parser]::ParseFile('${escapedControllerPath}',[ref]$tokens,[ref]$errors)`,
-      "if($errors.Count){$errors|ForEach-Object{[Console]::Error.WriteLine($_.Message)};exit 1}"
-    ].join(";");
-    const parsed = spawnSync(powershellPath, [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      parseCommand
-    ], { encoding: "utf8", windowsHide: true });
-    if (parsed.error || parsed.status !== 0) {
-      throw new Error(`Embedded InDesign controller did not parse: ${parsed.error?.message || parsed.stderr || parsed.stdout}`);
+    for (const embeddedPath of [controllerPath, discoveryPath]) {
+      const escapedEmbeddedPath = embeddedPath.replace(/'/g, "''");
+      const parseCommand = [
+        "$tokens=$null",
+        "$errors=$null",
+        `[void][System.Management.Automation.Language.Parser]::ParseFile('${escapedEmbeddedPath}',[ref]$tokens,[ref]$errors)`,
+        "if($errors.Count){$errors|ForEach-Object{[Console]::Error.WriteLine($_.Message)};exit 1}"
+      ].join(";");
+      const parsed = spawnSync(powershellPath, [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        parseCommand
+      ], { encoding: "utf8", windowsHide: true });
+      if (parsed.error || parsed.status !== 0) {
+        throw new Error(`Embedded InDesign PowerShell did not parse: ${parsed.error?.message || parsed.stderr || parsed.stdout}`);
+      }
+    }
+    if (distributionEvidence({}) !== null) throw new Error("Blank distribution provenance self-test failed.");
+    const testDistribution = distributionEvidence({
+      TYPO_CHECKER_RELEASE_TAG: "v1.1.0",
+      TYPO_CHECKER_COMMIT_SHA: "a".repeat(40),
+      TYPO_CHECKER_ARCHIVE_SHA256: "b".repeat(64)
+    });
+    if (testDistribution.commitSha !== "a".repeat(40) || testDistribution.archiveSha256 !== "B".repeat(64)) {
+      throw new Error("Distribution provenance acceptance self-test failed.");
+    }
+    let partialDistributionRejected = false;
+    try {
+      distributionEvidence({ TYPO_CHECKER_RELEASE_TAG: "v1.1.0" });
+    } catch (error) {
+      partialDistributionRejected = /COMMIT_SHA/i.test(String(error?.message || error));
+    }
+    if (!partialDistributionRejected) throw new Error("Partial distribution provenance self-test failed.");
+    const fakeDocumentPath = path.join(openDocumentRoot, "Self Test.indd");
+    fs.writeFileSync(fakeDocumentPath, "self-test", "utf8");
+    openDocumentJob = createOpenDocumentExportJob(fakeDocumentPath);
+    const openDocumentConfig = readJson(openDocumentJob.jobConfigPath, "open-document self-test configuration");
+    const openDocumentPointer = readJson(openDocumentJob.runActiveJobPath, "open-document self-test pointer");
+    if (openDocumentJob.mode !== "open_document" || openDocumentConfig.typoExportRun?.mode !== "open_document" || openDocumentPointer.jobId !== openDocumentJob.jobId || normalizedPath(path.dirname(path.dirname(openDocumentJob.jobPath))) !== normalizedPath(openDocumentRoot)) {
+      throw new Error("Open-document isolated-job self-test failed.");
     }
     await writeMatrixNoHeaders(workbookPath, "self_test", [
       ["Original content", "Corrected content", "Rechecked result"],
@@ -101959,6 +102223,9 @@ async function runSelfTest() {
       exporterPath: exporter.path,
       exporterSha256: exporter.sha256,
       embeddedController: true,
+      embeddedOpenDocumentDiscovery: true,
+      openDocumentIsolatedJob: true,
+      distributionProvenance: true,
       embeddedFrontierResolver: true,
       excelReadWrite: true,
       artifactPathSeparation: true,
@@ -101975,7 +102242,10 @@ async function runSelfTest() {
     }, null, 2));
   } finally {
     removeEmbeddedInDesignController(controllerPath);
+    removeEmbeddedOpenDocumentDiscovery(discoveryPath);
+    removeRuntimeExporter(openDocumentJob?.runtimeExporterPath);
     if (fs.existsSync(workbookPath)) fs.unlinkSync(workbookPath);
+    safelyRemoveTempDirectory(openDocumentRoot);
   }
 }
 function codexEnvironment(source = process.env) {
@@ -101989,21 +102259,45 @@ function codexEnvironment(source = process.env) {
 }
 function resolveCodexRuntime() {
   const nodePath = process.env.CODEX_NODE_EXE || process.execPath;
-  const candidates = [
+  const cliCandidates = [
     process.env.CODEX_CLI_JS,
     process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "node_modules", "@openai", "codex", "bin", "codex.js") : ""
   ].filter(Boolean);
-  const cliPath = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!fs.existsSync(nodePath)) throw new Error(`Codex Node runtime was not found: ${nodePath}`);
-  if (!cliPath) throw new Error("The official standalone Codex CLI is not installed.");
+  const cliPath = cliCandidates.find((candidate) => fs.existsSync(candidate));
   const officialCliTail = path.normalize(path.join("@openai", "codex", "bin", "codex.js")).toLowerCase();
-  if (!path.normalize(cliPath).toLowerCase().endsWith(officialCliTail)) {
-    throw new Error(`Refusing non-official Codex CLI path: ${cliPath}`);
+  if (cliPath) {
+    if (!fs.existsSync(nodePath)) throw new Error(`Codex Node runtime was not found: ${nodePath}`);
+    if (!path.normalize(cliPath).toLowerCase().endsWith(officialCliTail)) {
+      throw new Error(`Refusing non-official Codex CLI path: ${cliPath}`);
+    }
+    return {
+      command: nodePath,
+      prefixArgs: [cliPath],
+      displayPath: cliPath,
+      kind: "official_npm"
+    };
   }
-  return { nodePath, cliPath };
+  const executableCandidates = [
+    process.env.CODEX_EXE,
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "OpenAI", "Codex", "bin", "codex.exe") : ""
+  ].filter(Boolean);
+  const executablePath = executableCandidates.find((candidate) => fs.existsSync(candidate));
+  if (!executablePath) {
+    throw new Error("The official Codex CLI is not installed. Install Codex for Windows and sign in with ChatGPT.");
+  }
+  const officialExecutableTail = path.normalize(path.join("Programs", "OpenAI", "Codex", "bin", "codex.exe")).toLowerCase();
+  if (!path.normalize(executablePath).toLowerCase().endsWith(officialExecutableTail)) {
+    throw new Error(`Refusing non-official Codex executable path: ${executablePath}`);
+  }
+  return {
+    command: executablePath,
+    prefixArgs: [],
+    displayPath: executablePath,
+    kind: "official_windows"
+  };
 }
-function runCodex(nodePath, cliPath, args, options = {}) {
-  return spawnSync(nodePath, [cliPath, ...args], {
+function runCodex(runtime, args, options = {}) {
+  return spawnSync(runtime.command, [...runtime.prefixArgs, ...args], {
     cwd: options.cwd,
     env: codexEnvironment(),
     input: options.input,
@@ -102013,8 +102307,8 @@ function runCodex(nodePath, cliPath, args, options = {}) {
     windowsHide: true
   });
 }
-function assertChatGptLogin(nodePath, cliPath) {
-  const status = runCodex(nodePath, cliPath, [
+function assertChatGptLogin(runtime) {
+  const status = runCodex(runtime, [
     "-c",
     `forced_login_method="${FORCED_LOGIN_METHOD}"`,
     "login",
@@ -102265,7 +102559,7 @@ async function runReviewQuery({
   stage = "initial_review",
   promptBuilder = buildPrompt
 }) {
-  assertChatGptLogin(runtime.nodePath, runtime.cliPath);
+  assertChatGptLogin(runtime);
   let queryResolution;
   try {
     queryResolution = await resolveLatestSubscriptionModel();
@@ -102294,7 +102588,7 @@ async function runReviewQuery({
   );
   let notes;
   try {
-    const run = runCodex(runtime.nodePath, runtime.cliPath, [
+    const run = runCodex(runtime, [
       "exec",
       "-",
       "--model",
@@ -102373,6 +102667,9 @@ async function main() {
     if (EXPLICIT_INPUT_XLSX && REUSE_EXPORT_JOB_PATH) {
       throw new Error("Set only one of INPUT_XLSX or REUSE_EXPORT_JOB_PATH.");
     }
+    if (OPEN_INDESIGN_DOCUMENT && (EXPLICIT_INPUT_XLSX || REUSE_EXPORT_JOB_PATH)) {
+      throw new Error("OPEN_INDESIGN_DOCUMENT cannot be combined with INPUT_XLSX or REUSE_EXPORT_JOB_PATH.");
+    }
     const exportRun = EXPLICIT_INPUT_XLSX ? null : REUSE_EXPORT_JOB_PATH ? reuseExistingExport() : runInDesignExport();
     const inputContext = resolveInputContext(exportRun);
     configureOutputPaths(inputContext);
@@ -102380,7 +102677,7 @@ async function main() {
     const inputData = readInputWorkbook(inputContext);
     const records = inputData.records;
     const runtime = resolveCodexRuntime();
-    assertChatGptLogin(runtime.nodePath, runtime.cliPath);
+    assertChatGptLogin(runtime);
     let initialResolution;
     try {
       initialResolution = await resolveLatestSubscriptionModel();
@@ -102392,7 +102689,7 @@ async function main() {
     const results = records.map((record) => ({ correctedText: record.text, note: NO_ERRORS_NOTE }));
     const now = (/* @__PURE__ */ new Date()).toISOString();
     job = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       jobType: inputContext.kind === "indesign_content_export" ? "indesign_content_export_typo_check" : "workbook_typo_check",
       status: "running",
       provider: "CodexSubscription",
@@ -102404,6 +102701,8 @@ async function main() {
       modelResolution: initialResolution,
       configuredModel: CONFIGURED_MODEL || null,
       reasoningEffort: REASONING_EFFORT,
+      distribution: distributionEvidence(),
+      codexRuntime: { kind: runtime.kind, path: runtime.displayPath },
       queryTimeoutMs: CODEX_QUERY_TIMEOUT_MS,
       input: {
         contract: inputContext.kind,
@@ -102424,6 +102723,7 @@ async function main() {
         runtimeExporterSha256: inputContext.exportRun?.runtimeExporterSha256 || null,
         exportControllerPath: inputContext.exportRun?.controllerPath || null,
         exportAction: inputContext.exportRun?.action || null,
+        openDocumentMode: inputContext.exportRun?.mode === "open_document",
         exportStartedAt: inputContext.exportRun?.startedAt || null,
         exportCompletedAt: inputContext.exportRun?.completedAt || null
       },
