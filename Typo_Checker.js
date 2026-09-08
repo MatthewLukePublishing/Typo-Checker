@@ -100846,6 +100846,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { resolveLatestSubscriptionModel as resolveFreshLatestSubscriptionModel } from "./Resolve-LatestSubscriptionModel.mjs";
 var SCRIPT_DIRECTORY = path.dirname(path.resolve(process.argv[1] || "."));
 var ACTIVE_JOB_CONFIG_PATH = path.resolve(
   process.env.ACTIVE_JOB_CONFIG_PATH || "D:\\Google Drive\\Publishing\\Code\\Programs\\Translate\\02 Translate Text\\Active Job.json"
@@ -101296,24 +101297,8 @@ async function fetchOfficialLatestModelMarkdown() {
   }
   throw lastError || new Error("official latest-model request failed");
 }
-async function resolveLatestSubscriptionModel() {
-  const { markdown, sourceUrl } = await fetchOfficialLatestModelMarkdown();
-  const info = parseLatestModelInfo(markdown);
-  const model = String(info?.model || "").trim();
-  const migrationGuide = String(info?.migrationGuide || "").trim();
-  const promptingGuide = String(info?.promptingGuide || "").trim();
-  if (!/^gpt-[a-z0-9.-]+$/i.test(model) || !migrationGuide || !promptingGuide) {
-    throw new Error("official latestModelInfo is missing a valid model or guide reference");
-  }
-  return {
-    schemaVersion: 1,
-    policy: MODEL_POLICY,
-    model,
-    resolvedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    sourceUrl,
-    migrationGuideUrl: new URL(migrationGuide, OFFICIAL_BASE_URL).toString(),
-    promptingGuideUrl: new URL(promptingGuide, OFFICIAL_BASE_URL).toString()
-  };
+async function resolveLatestSubscriptionModel(options = {}) {
+  return resolveFreshLatestSubscriptionModel(options);
 }
 function verifyInDesignExporter() {
   if (!fs.existsSync(INDESIGN_EXPORT_SCRIPT_PATH) || !fs.statSync(INDESIGN_EXPORT_SCRIPT_PATH).isFile()) {
@@ -102226,7 +102211,7 @@ async function runSelfTest() {
       embeddedOpenDocumentDiscovery: true,
       openDocumentIsolatedJob: true,
       distributionProvenance: true,
-      embeddedFrontierResolver: true,
+      freshDualModelResolver: true,
       excelReadWrite: true,
       artifactPathSeparation: true,
       apiCredentialsStripped: true,
@@ -102562,7 +102547,11 @@ async function runReviewQuery({
   assertChatGptLogin(runtime);
   let queryResolution;
   try {
-    queryResolution = await resolveLatestSubscriptionModel();
+    queryResolution = await resolveLatestSubscriptionModel({
+      runtime,
+      expectedModel: job.model,
+      reasoningEffort: REASONING_EFFORT
+    });
   } catch (error) {
     throw new Error(`Official frontier-model resolution failed before ${batch.queryId}: ${error.message}`);
   }
@@ -102575,6 +102564,7 @@ async function runReviewQuery({
     modelPolicy: queryResolution.policy,
     modelResolvedAt: queryResolution.resolvedAt,
     modelResolutionSourceUrl: queryResolution.sourceUrl,
+    modelResolution: queryResolution,
     reasoningEffort: REASONING_EFFORT,
     rowCount: batch.items.length,
     sourceChars: batch.sourceChars,
@@ -102680,7 +102670,10 @@ async function main() {
     assertChatGptLogin(runtime);
     let initialResolution;
     try {
-      initialResolution = await resolveLatestSubscriptionModel();
+      initialResolution = await resolveLatestSubscriptionModel({
+        runtime,
+        reasoningEffort: REASONING_EFFORT
+      });
     } catch (error) {
       throw new Error(`Official frontier-model resolution failed: ${error.message}`);
     }
@@ -102689,7 +102682,7 @@ async function main() {
     const results = records.map((record) => ({ correctedText: record.text, note: NO_ERRORS_NOTE }));
     const now = (/* @__PURE__ */ new Date()).toISOString();
     job = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       jobType: inputContext.kind === "indesign_content_export" ? "indesign_content_export_typo_check" : "workbook_typo_check",
       status: "running",
       provider: "CodexSubscription",

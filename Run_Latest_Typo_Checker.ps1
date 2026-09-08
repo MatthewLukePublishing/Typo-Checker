@@ -13,6 +13,7 @@ $GitHubApiBase = "https://api.github.com/repos/$Repository"
 $WorkspacePrefix = 'matthew-luke-typo-checker-'
 $RequiredFiles = @(
     'Typo_Checker.js',
+    'Resolve-LatestSubscriptionModel.mjs',
     'Export All Content to Excel.jsx',
     'package.json'
 )

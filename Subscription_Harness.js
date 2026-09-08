@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { resolveLatestSubscriptionModel as resolveFreshLatestSubscriptionModel } from "./Resolve-LatestSubscriptionModel.mjs";
 
 const MODEL_POLICY = "official_latest_frontier";
 const REASONING_EFFORT = "xhigh";
@@ -131,24 +132,8 @@ async function fetchOfficialLatestModelMarkdown() {
   throw lastError || new Error("official latest-model request failed");
 }
 
-export async function resolveLatestSubscriptionModel() {
-  const { markdown, sourceUrl } = await fetchOfficialLatestModelMarkdown();
-  const info = parseLatestModelInfo(markdown);
-  const model = String(info?.model || "").trim();
-  const migrationGuide = String(info?.migrationGuide || "").trim();
-  const promptingGuide = String(info?.promptingGuide || "").trim();
-  if (!/^gpt-[a-z0-9.-]+$/i.test(model) || !migrationGuide || !promptingGuide) {
-    throw new Error("official latestModelInfo is missing a valid model or guide reference");
-  }
-  return {
-    schemaVersion: 1,
-    policy: MODEL_POLICY,
-    model,
-    resolvedAt: new Date().toISOString(),
-    sourceUrl,
-    migrationGuideUrl: new URL(migrationGuide, OFFICIAL_BASE_URL).toString(),
-    promptingGuideUrl: new URL(promptingGuide, OFFICIAL_BASE_URL).toString(),
-  };
+export async function resolveLatestSubscriptionModel(options = {}) {
+  return resolveFreshLatestSubscriptionModel(options);
 }
 
 function codexEnvironment(source = process.env) {
@@ -267,12 +252,15 @@ class SubscriptionHarness {
   async #initialize() {
     this.runtime = resolveCodexRuntime();
     assertChatGptLogin(this.runtime);
-    const resolution = await resolveLatestSubscriptionModel();
+    const resolution = await resolveLatestSubscriptionModel({
+      runtime: this.runtime,
+      reasoningEffort: REASONING_EFFORT,
+    });
     assertCurrentModel(resolution, this.configuredModel);
     this.tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typos-subscription-"));
     const now = new Date().toISOString();
     this.job = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       jobType: this.jobType,
       status: "running",
       provider: "CodexSubscription",
@@ -332,7 +320,11 @@ class SubscriptionHarness {
     assertChatGptLogin(this.runtime);
     let resolution;
     try {
-      resolution = await resolveLatestSubscriptionModel();
+      resolution = await resolveLatestSubscriptionModel({
+        runtime: this.runtime,
+        expectedModel: this.job.model,
+        reasoningEffort: REASONING_EFFORT,
+      });
     } catch (error) {
       throw new Error(`Official frontier-model resolution failed before ${queryId}: ${error.message}`);
     }
@@ -347,6 +339,7 @@ class SubscriptionHarness {
       modelPolicy: resolution.policy,
       modelResolvedAt: resolution.resolvedAt,
       modelResolutionSourceUrl: resolution.sourceUrl,
+      modelResolution: resolution,
       reasoningEffort: REASONING_EFFORT,
       metadata: options.metadata || {},
       status: "sending",

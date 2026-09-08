@@ -14,6 +14,9 @@ typo_checks/
 *.pem
 *.key
 
+# Local project governance
+/PROJECT.md
+
 # Temporary and editor files
 *.log
 *.tmp

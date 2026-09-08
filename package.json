@@ -1,6 +1,6 @@
 {
   "name": "@matthew-luke-publishing/typo-checker",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Subscription-only typo and translation consistency checking with the official Codex CLI.",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node ./Run_Self_Tests.js",
-    "check": "node --check ./Typo_Checker.js && node --check ./Typo_Checker_Batch.js && node --check ./Compare_5_Columns.js && node --check \"./5_Columns Rechecker.js\" && node --check ./Style_Guide_Checker.js && node --check ./Subscription_Harness.js"
+    "check": "node --check ./Typo_Checker.js && node --check ./Typo_Checker_Batch.js && node --check ./Compare_5_Columns.js && node --check \"./5_Columns Rechecker.js\" && node --check ./Style_Guide_Checker.js && node --check ./Subscription_Harness.js && node --check ./Resolve-LatestSubscriptionModel.mjs && node --check ./Live_Model_Policy.test.cjs"
   },
   "keywords": [
     "codex",

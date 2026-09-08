@@ -30,6 +30,23 @@ for (const [scriptName, environmentName] of tests) {
   }
 }
 
+process.stdout.write("\n== Live_Model_Policy.test.cjs ==\n");
+const modelPolicyTest = spawnSync(process.execPath, [
+  "--test",
+  path.join(scriptDirectory, "Live_Model_Policy.test.cjs"),
+], {
+  cwd: scriptDirectory,
+  encoding: "utf8",
+  maxBuffer: 4 * 1024 * 1024,
+  windowsHide: true,
+});
+if (modelPolicyTest.stdout) process.stdout.write(modelPolicyTest.stdout);
+if (modelPolicyTest.stderr) process.stderr.write(modelPolicyTest.stderr);
+if (modelPolicyTest.error || modelPolicyTest.status !== 0) {
+  console.error(`Live model-policy tests failed with exit code ${modelPolicyTest.status}: ${modelPolicyTest.error?.message || "see diagnostics above"}`);
+  process.exit(modelPolicyTest.status || 1);
+}
+
 if (process.platform === "win32") {
   process.stdout.write("\n== Run_Latest_Typo_Checker.ps1 ==\n");
   const powershellPath = path.join(

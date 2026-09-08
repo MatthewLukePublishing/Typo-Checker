@@ -9,14 +9,24 @@ selects an older model or stale program release.
 
 The primary workflow checks every text item twice. For every query it:
 
-- resolves OpenAI's current official frontier model at runtime;
-- records the exact resolved model in the job record;
-- resolves the frontier again immediately before the query is sent;
+- freshly queries OpenAI's live model metadata and identifies its one official
+  frontier model;
+- freshly queries the signed-in account's live Codex catalog and requires that
+  exact model to be visible, current, and compatible with `xhigh`;
+- records the exact model, resolution time, Codex client version, source URLs,
+  and both metadata hashes in the job record;
+- repeats both uncached checks immediately before every query, retry, and
+  recheck;
 - uses independent `xhigh` reasoning for the primary review and recheck;
 - stops if model resolution fails, the configured model is outdated, or the
   official frontier changes during the job; and
 - requires Codex CLI authentication through ChatGPT, with API credentials stripped
   from every child process.
+
+The shared authority is `Resolve-LatestSubscriptionModel.mjs`, adapted from the
+Translation Pipeline resolver. A saved resolution is evidence only and is never
+used for a later query. If either live request fails, the latest model changes,
+the account cannot use it, or `xhigh` is unavailable, no model query is sent.
 
 ## Requirements
 
@@ -188,6 +198,20 @@ A pull request is only a proposal and changes nothing here unless the repository
 owner reviews and merges it.
 
 ## Maintainer notes
+
+### GitHub publication contract
+
+The canonical public repository is
+`https://github.com/MatthewLukePublishing/typo-checker`. After an authorized
+maintained source or documentation change—including every new executable or
+script—passes the relevant offline tests and Publishing consolidation, commit
+and push it to that repository in the same task. A change to distributed
+behavior must also receive a new version tag and stable GitHub release so the
+latest-release launcher can retrieve it. Verify GitHub CI after pushing.
+
+Never publish ignored inputs, generated workbooks, job records, credentials,
+authentication state, or private production data. A failed validation or push
+must be reported; it must not be described as published.
 
 ### Management contract
 
