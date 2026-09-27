@@ -204,16 +204,17 @@ owner reviews and merges it.
 The canonical public repository is
 `https://github.com/MatthewLukePublishing/typo-checker`. After an authorized
 maintained source or documentation change—including every new executable or
-script—passes the relevant offline tests and Publishing consolidation, commit
-and push it to that repository in the same task. A change to distributed
-behavior must also receive a new version tag and stable GitHub release so the
-latest-release launcher can retrieve it. Verify GitHub CI after pushing.
+script—passes the relevant offline tests and Publishing consolidation, validate
+and commit the exact candidate locally. Do not push, tag, create a release, or
+otherwise publish to GitHub as an automatic completion step. Any GitHub action
+requires explicit per-action user authorization; if authorized, verify the
+resulting revision and CI.
 
 Never publish ignored inputs, generated workbooks, job records, credentials,
 authentication state, or private production data. A failed validation or push
 must be reported; it must not be described as published.
 
-### Management contract
+## Management contract
 
 - Primary entry point: `Run_Latest_Typo_Checker.ps1`
 - Bundled checker: `Typo_Checker.js`
@@ -225,10 +226,10 @@ or project-organization changes, run the publishing-code consolidation process.
 
 ## Authentication contract
 
-This program must not store secrets or authentication state locally. Maintainer
-credentials, tokens, cookies, browser profiles, and provider sessions belong only
-under `D:\Google Drive\Publishing\Code\Admin\Access`. Never commit an `.env` file,
-API key, token, job input, review output, or authentication artifact.
+This program must not store secrets or authentication state locally. All current and future credentials, `.env` files, DPAPI blobs, tokens, private keys, cookies, browser profiles, session state, and provider account contexts belong only in `D:\Google Drive\Publishing\Code\Admin\Access`. Code in this program may reference protected loaders or authenticated sessions from that directory but must never duplicate or print secret values.
+
+Never commit an `.env` file, API key, token, job input, review output, or
+authentication artifact.
 
 ## License
 
