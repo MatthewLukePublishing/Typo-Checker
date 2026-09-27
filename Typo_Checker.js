@@ -101332,7 +101332,14 @@ function newRunId() {
   return `typo_export_${timestamp}_${crypto4.randomBytes(4).toString("hex")}`;
 }
 function prepareRuntimeExporter(exporter, runId, runActiveJobPath) {
-  const approvedSource = fs.readFileSync(exporter.path, "utf8");
+  const approvedBytes = fs.readFileSync(exporter.path);
+  const approvedHash = crypto4.createHash("sha256").update(approvedBytes).digest("hex").toUpperCase();
+  if (approvedHash !== exporter.sha256) {
+    throw new Error(
+      `The InDesign exporter changed after verification. Expected SHA-256 ${exporter.sha256}, found ${approvedHash}.`
+    );
+  }
+  const approvedSource = approvedBytes.toString("utf8");
   const approvedPointer = '  var ACTIVE_JOB_CONFIG_PATH = "D:\\\\Google Drive\\\\Publishing\\\\Code\\\\Programs\\\\Translate\\\\02 Translate Text\\\\Active Job.json";';
   if (approvedSource.split(approvedPointer).length !== 2) {
     throw new Error("The approved exporter does not contain exactly one expected active-job pointer declaration.");
@@ -102106,6 +102113,15 @@ async function runSelfTest() {
       partialDistributionRejected = /COMMIT_SHA/i.test(String(error?.message || error));
     }
     if (!partialDistributionRejected) throw new Error("Partial distribution provenance self-test failed.");
+    let changedExporterRejected = false;
+    try {
+      prepareRuntimeExporter({ path: exporter.path, sha256: "0".repeat(64) }, `${selfTestId}_changed`, path.join(os.tmpdir(), `${selfTestId}_pointer.json`));
+    } catch (error) {
+      changedExporterRejected = /changed after verification/i.test(String(error?.message || error));
+    }
+    if (!changedExporterRejected || fs.existsSync(path.join(os.tmpdir(), `${selfTestId}_changed.jsx`))) {
+      throw new Error("Exporter re-verification self-test failed.");
+    }
     const fakeDocumentPath = path.join(openDocumentRoot, "Self Test.indd");
     fs.writeFileSync(fakeDocumentPath, "self-test", "utf8");
     openDocumentJob = createOpenDocumentExportJob(fakeDocumentPath);
